@@ -1,5 +1,6 @@
 PACKAGE := mdbm
-VERSION := $(shell egrep ^Version ../README -m1 | awk '{print $$2}')
+BUILD_NUMBER := 0
+VERSION := $(shell egrep ^Version ../README -m1 | awk -v BUILD=$(BUILD_NUMBER) '{print $$2 "." BUILD}')
 RELEASE := 0
 RPM_VERSION := ${VERSION}-${RELEASE}
 PACKAGE_WITH_VERSION := $(PACKAGE)-$(RPM_VERSION)
@@ -15,7 +16,7 @@ buildrpmdist: specfile buildtgz
 	rpmbuild -ta ./build/$(TARBALL)
 
 buildrpm: specfile buildtgz
-	rpmbuild --define "_rpmdir ./build/" --define "_sourcedir ./build/" --define "_srcrpmdir ./build/" -ta ./build/$(TARBALL).gz
+	rpmbuild --define "_rpmdir ./build/" --define "_sourcedir ./build/" --define "_srcrpmdir ./build/" -ta ./build/$(TARBALL)
 
 buildtgz: prepbuildtarball
 	tar czv -C ./build/ -f ./build/$(TARBALL) ${PACKAGE_WITH_VERSION}
@@ -42,6 +43,12 @@ prepclean:
 
 clean:
 	rm -rf ./build/* ./dist/* 2>/dev/null || :
+	rm -rf mdbm.spec
 
 realclean: clean 
 	rmdir ./build/ ./dist/ 2>/dev/null || :
+
+# Makefile debugging helper. Use `make echo_FOO' to display `FOO = $(FOO)'.
+echo_%:
+	@echo "$* = ${$*}"
+

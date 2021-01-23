@@ -1,6 +1,5 @@
 
-CANONICALIZE=readlink -m -n -q
-TOPDIR=$(shell $(CANONICALIZE) $(shell pwd)/../..)
+TOPDIR=$(shell cd ../.. && pwd)
 include $(TOPDIR)/Makefile.base
 
 HEADERS=            \
@@ -24,13 +23,16 @@ CPP_SOURCES=      \
   multi_lock.cc
 
 
-LIBNAME=libmdbm.so
+LIBNAME=libmdbm.$(SHLIB_EXT)
 LIBVER=4
+ifeq ($(UNAME), Darwin)
+SONAME=-Wl,-install_name,$(LIBNAME).$(LIBVER)
+else
 SONAME=-Wl,-soname,$(LIBNAME).$(LIBVER)
+endif
 #-Wl,-rpath,$(DEFAULT_LIB_INSTALL_PATH)
 
-# add real-time lib for clock_gettime
-LIB_BUILD_FLAGS += -lrt
+LIB_BUILD_FLAGS += $(LIBRT)
 
 LIB_DEST=$(PREFIX)/lib$(ARCH_SUFFIX)
 ifeq ($(SET_RPATH),1)
@@ -52,7 +54,7 @@ install:: default-make-target
 	$(INSTALL) -D $(OBJDIR)/$(LIBNAME).$(LIBVER) $(LIB_DEST)
 	#ln -s -f -r $(LIB_DEST)/$(LIBNAME).$(LIBVER) $(LIB_DEST)/$(LIBNAME)
 	# some systems don't support "ln -r" (relative links), emulate it...
-	cd $(LIB_DEST); ln -s -f -r $(LIBNAME).$(LIBVER) $(LIBNAME)
+	cd $(LIB_DEST); ln -s -f $(LIBNAME).$(LIBVER) $(LIBNAME)
 
 clean :: clean-objs
 

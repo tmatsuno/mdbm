@@ -28,7 +28,6 @@
 #include <time.h>
 #include <unistd.h>
 #include <netinet/in.h>
-#include <syscall.h>
 #include <signal.h>
 #include <sys/resource.h> /* used for rlimit */
 #include <execinfo.h>
@@ -130,7 +129,7 @@ static int mdbm_set_window_size_internal(MDBM* db, size_t wsize);
 
 extern int do_delete_lockfiles(const char* dbname);
 
-inline uint64_t
+static inline uint64_t
 get_gtod_usec()
 {
     struct timeval tv;
@@ -146,7 +145,7 @@ volatile static uint64_t tsc_per_usec;    /* TSC clock cycles per microsecond */
 
 /* Intel (and later model AMD) Fetch Time-StampCounter
  * WANRING:  This value may be affected by speedstep and may vary randomly across cores. */
-__inline__ uint64_t rdtsc(void)
+static inline uint64_t rdtsc(void)
 {
     uint32_t lo, hi;
     /* We cannot use "=A", since this would use %rax on x86_64 and
@@ -1041,7 +1040,7 @@ check_db_dir(MDBM* db, int verbose)
         if (verbose) {
             mdbm_log(LOG_CRIT,
                      "%s: db_dir (0x%p) out-of-sync with directory on page 0",
-                     db->db_filename,db->db_dir);
+                     db->db_filename,(void*)db->db_dir);
         }
         nerr++;
     }
@@ -1600,8 +1599,8 @@ protect_dir(MDBM* db, int protect)
                  " used=%d, total=%d, db_base=%p, db_base+used=%p, total - used=%d"
                  " mprotect start=%p, mprotect end=%p",
                  db->db_pagesize, db->db_sys_pagesize, dir_size,
-                 used, total, db->db_base, db->db_base + used, total - used,
-                 db->db_base + used, db->db_base + used + total - used - 1);
+                 used, total, (void*)db->db_base, (void*)(db->db_base + used), total - used,
+                 (void*)(db->db_base + used), (void*)(db->db_base + used + total - used - 1));
         if (mprotect(db->db_base + used,
                      total - used,
                      (protect
@@ -1666,10 +1665,12 @@ mdbm_internal_remap(MDBM *db, size_t dbsize, int flags)
         got_hdr = 1;
         if (munmap(db->db_base,db->db_base_len) < 0) {
             mdbm_logerror(LOG_ERR,0,"munmap(%p,%llu)",
-                          db->db_base,(unsigned long long)db->db_base_len);
+                          (void*)db->db_base,(unsigned long long)db->db_base_len);
         }
         /*fprintf(stderr, "remap::munmap(%p,%u)\n", db->db_base,(unsigned)db->db_base_len); */
         db->db_base = NULL;
+    } else {
+      memset(&page, 0, sizeof(page));
     }
 
     if (!dbsize || !got_hdr) {
@@ -1715,7 +1716,7 @@ mdbm_internal_remap(MDBM *db, size_t dbsize, int flags)
     }
 
     if (MDBM_IS_WINDOWED(db)) {
-#ifdef __linux__
+#ifdef HAVE_WINDOWED_MODE
         int syspagesz = db->db_sys_pagesize;
         int dbpagesz = hdr.h_pagesize;
         /*int ndbpages = hdr.h_num_pages; // db-sized pages */
@@ -2566,7 +2567,7 @@ resize(MDBM* db, int new_dirshift, int new_num_pages)
                  " old_ptable=%p, old_ptsize=%d,"
                  " new_ptable=%p, new_ptsize=%d,"
                  " directory size increase=%d\n",
-                 db->db_dir,
+                 (void*)db->db_dir,
                  old_dirsize,
                  new_dirsize,
                  (void*)db->db_ptable,
@@ -3608,7 +3609,9 @@ check_hugetlbfs(const char *filename, int fd, int *hugep, uint32_t *page_size)
 #else
     rc = 1;
     *hugep = 0;
-    *page_size = 0;
+    if (page_size != NULL) {
+        *page_size = 0;
+    }
 #endif
     return rc;
 }
@@ -4112,7 +4115,7 @@ mdbm_open_inner(const char *filename, int flags, int mode, int pagesize, int dbs
             return NULL;
         }
 
-#ifdef FREEBSD
+#ifndef HAVE_WINDOWED_MODE /* WINDOWED mode only supported on linux */
     if (flags & MDBM_OPEN_WINDOWED) {
         ERROR();
         close(fd);
@@ -4316,7 +4319,7 @@ mdbm_open_inner(const char *filename, int flags, int mode, int pagesize, int dbs
         if (db->db_base) {
             if (munmap(db->db_base,db->db_base_len) < 0) {
                 mdbm_logerror(LOG_ERR,0,"munmap(%p,%llu)",
-                              db->db_base,(unsigned long long)db->db_base_len);
+                              (void*)db->db_base,(unsigned long long)db->db_base_len);
             }
             /*fprintf(stderr, "open_error::munmap(%p,%u)\n", db->db_base,(unsigned)db->db_base_len); */
         }
@@ -4429,7 +4432,7 @@ mdbm_close(MDBM *db)
         }
         if (munmap(db->db_base,db->db_base_len) < 0) {
             mdbm_logerror(LOG_ERR,0,"munmap(%p,%llu)",
-                          db->db_base,(unsigned long long)db->db_base_len);
+                          (void*)db->db_base,(unsigned long long)db->db_base_len);
         }
         /*fprintf(stderr, "close::munmap(%p,%u)\n", db->db_base,(unsigned)db->db_base_len); */
         db->db_base = NULL;
@@ -4506,10 +4509,22 @@ mdbm_get_cachemode_name(int cachemode)
           "unknown"
         };
 
+    static char* s_cache_clean_modes[] =
+        { "CLEAN+none",
+          "CLEAN+LFU",
+          "CLEAN+LRU",
+          "CLEAN+GDSF",
+          "unknown"
+        };
+
+    int clean = cachemode & MDBM_CACHEMODE_EVICT_CLEAN_FIRST;
+    cachemode = MDBM_CACHEMODE(cachemode);
     assert(sizeof(s_cache_modes) / sizeof(s_cache_modes[0]) > MDBM_CACHEMODE_MAX);
-    return (cachemode > MDBM_CACHEMODE_MAX
-            ? s_cache_modes[MDBM_CACHEMODE_MAX + 1]
-            : s_cache_modes[cachemode]);
+    if (cachemode > MDBM_CACHEMODE_MAX) {
+      return s_cache_modes[MDBM_CACHEMODE_MAX + 1];
+    }
+    return (clean) ? s_cache_clean_modes[cachemode] : s_cache_modes[cachemode];
+
 }
 
 int
@@ -5133,7 +5148,7 @@ mdbm_store_r(MDBM *db, datum* key, datum* val, int flags, MDBM_ITER* iter)
                     pnum = hashval_to_pagenum(db,h);
                     p = pagenum_to_page(db,pnum,MDBM_PAGE_EXISTS,MDBM_PAGE_MAP);
                 }
-                if (free_bytes >= alloc_bytes) {
+                if (free_bytes >= alloc_bytes && ntries < MAX_TRIES) {
                     continue;
                 }
             }
@@ -5904,7 +5919,7 @@ compact_db(MDBM* db) {
         if (munmap(db->db_base+compact_size,db->db_base_len-compact_size) < 0) {
           mdbm_logerror(LOG_ERR,0,"%s: munmap() base:%p, len:%llu new:%llu "
               "failure in compact_db()",
-              db->db_filename, db->db_base,(unsigned long long)db->db_base_len,
+              db->db_filename, (void*)db->db_base,(unsigned long long)db->db_base_len,
               (unsigned long long)compact_size);
           ret = -1;
           /* fall thru to do damage control.. we've already truncated the file */
@@ -7815,7 +7830,7 @@ mdbm_set_window_size_internal(MDBM* db, size_t wsize)
     if (db->db_window.base) {
         if (munmap(db->db_window.base,db->db_window.base_len) < 0) {
             mdbm_logerror(LOG_ERR,0,"munmap(%p,%llu)",
-                          db->db_window.base,(unsigned long long)db->db_window.base_len);
+                          (void*)db->db_window.base,(unsigned long long)db->db_window.base_len);
         }
         /*fprintf(stderr, "set_window_size::munmap(%p,%u)\n", db->db_window.base,(unsigned)db->db_window.base_len); */
         db->db_window.base = NULL;
@@ -7888,7 +7903,7 @@ mdbm_get_window_stats(MDBM* db, mdbm_window_stats_t* s, size_t s_size)
 }
 
 
-#ifdef __linux__
+#ifdef HAVE_WINDOWED_MODE
 
 #ifndef TAILQ_FOREACH
 
@@ -8014,7 +8029,7 @@ release_window_page(MDBM* db, void* p)
 }
 
 
-extern int
+int
 remap_window_bytes(MDBM* db, char* mem_base, int mem_offset, uint32_t len, uint64_t file_offset, int flags) {
     int sys_pg_sz = db->db_sys_pagesize;
     /* db page size in units of system pages */
@@ -8045,7 +8060,7 @@ remap_window_bytes(MDBM* db, char* mem_base, int mem_offset, uint32_t len, uint6
         /*        mem_ptr,map_unit,(long long unsigned)pg_offset, i, db->db_base, db->db_window.base); */
         if (remap_file_pages(mem_ptr,map_unit,0,pg_offset,len ? 0 : MAP_NONBLOCK) < 0) {
             mdbm_logerror(LOG_ERR,0, "remap_file_pages(%p,%llu,0,%llu,0); ",
-                          mem_ptr,(unsigned long long)map_unit,(unsigned long long)pg_offset);
+                          (void*)mem_ptr,(unsigned long long)map_unit,(unsigned long long)pg_offset);
             errno = ENOMEM;
             return -1;
         }
@@ -8054,7 +8069,7 @@ remap_window_bytes(MDBM* db, char* mem_base, int mem_offset, uint32_t len, uint6
 }
 
 /* npages is in db_page_size */
-extern mdbm_page_t*
+mdbm_page_t*
 get_window_page(MDBM* db, mdbm_page_t* page, int pagenum, int npages, uint32_t off, uint32_t len)
 {
     int pnum;
@@ -8239,21 +8254,147 @@ get_window_page(MDBM* db, mdbm_page_t* page, int pagenum, int npages, uint32_t o
 #endif
     return (mdbm_page_t*)p;
 }
-#endif
 
-#ifdef FREEBSD
-static mdbm_page_t*
+/* open_tmp_test_file is a helper used by remap_is_limited to open the test file. */
+/* Returns file descriptor if successful, -1 otherwise */
+
+int
+open_tmp_test_file(const char *file, uint32_t siz, char *buf)
+{
+    int created = 0, fd = -1;
+
+    snprintf(buf, MAXPATHLEN, "%s%d.map", file, gettid()); /* assuming buf is big enough */
+
+    fd = open(buf, O_RDWR|O_NOATIME);
+    if (fd < 0) {
+        created = 1;
+        fd = open(buf, O_RDWR|O_CREAT|O_TRUNC|O_NOATIME, 0664);
+        if (fd < 0) {
+            return -1;
+        }
+    }
+
+    /* expand the file to the proper size: write a "\0" byte to force the expansion */
+    if (created) {
+        if ((lseek(fd, siz-1, SEEK_SET) < 0) || (write(fd, "", 1) != 1)) {
+            mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot expand",buf);
+            close(fd);
+            return -1;
+        }
+    }
+    return fd;
+}
+
+
+static inline void
+close_unmap_unlink(uint8_t *map, uint32_t size, int fd, char *fname)
+{
+    if ((map != NULL) && (munmap(map, size) != 0)) {
+        mdbm_logerror(LOG_ERR,0,"%s: Could not munmap", fname);
+    }
+    if (close(fd) != 0) {
+        mdbm_logerror(LOG_ERR,0,"%s: Could not close", fname);
+    }
+    if (unlink(fname) != 0) {
+        mdbm_logerror(LOG_ERR,0,"%s: Could not unlink", fname);
+    }
+}
+
+/* for use by remap_is_limited().
+ * -1 means unknown, 0 means not limited (RHEL4), 1 means limited(RHEL6)
+ */
+static sig_atomic_t remap_limited_status = -1;
+
+
+/* remap_is_limited() - for internal use by mdbm_open_internal
+ *
+ * Tests whether MDBM V3 is running on RHEL 6 (in a 4-on-6 yroot).
+ * Needed because we have to fail mdbm_open if opened with WINDOWED_MODE on RHEL6.
+ *
+ * Returns 1 if remap_file_pages is limited (RHEL6), or 0 if not (RHEL4).
+ *
+ * remap_limited_status: -1 means unknown, 0 means not limited (RHEL4), 1 means limited(RHEL6)
+ */
+
+int
+remap_is_limited(uint32_t sys_pagesize)
+{
+    int ret, fd = -1;
+    uint8_t* map = NULL;
+    char *fname = "/tmp/remaptest";
+    uint32_t size = sys_pagesize + sys_pagesize; /* 2 pages needed in total */
+    char fnbuf[MAXPATHLEN];  /* File name buffer */
+
+    if (remap_limited_status >= 0) {
+        return remap_limited_status;   /* remap test previously performed: return result */
+    }
+
+    /* remap_limited_status < 0 - create test file */
+
+    if ((fd = open_tmp_test_file(fname, size, fnbuf)) < 0) {
+        fname = "/tmp/remaptest2";
+        if ((fd = open_tmp_test_file(fname, size, fnbuf)) < 0) {
+            mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot open", fname);
+            return 0;   /* Things are probably very broken, so something else will fail soon */
+        }
+    }
+
+    map = (uint8_t*)mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+        mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot mmap (%d)", fnbuf, errno);
+        close_unmap_unlink(NULL, 0, fd, fnbuf);
+        return 1;  /* shouldn't fail: return "limited" but don't update remap_limited_status */
+    }
+
+    /*int remap_file_pages(void *addr, size_t size, int prot, ssize_t pgoff, int flags); */
+    if (remap_file_pages((void*)map, size, 0, 0, 0) != 0) {   /* map 2 pages first */
+        mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot remap first 2 pages",
+                      fnbuf);
+        close_unmap_unlink(map, size, fd, fnbuf);
+        return 1;  /* return "limited" but don't update remap_limited_status */
+    }
+
+    /* map 2nd file-page to offset 0 */
+    if (remap_file_pages((void*)map, sys_pagesize, 0, 1, 0) != 0) {
+        mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot remap second page",
+                      fnbuf);
+        close_unmap_unlink(map, size, fd, fnbuf);
+        return 1;  /* return "limited" but don't update remap_limited_status */
+    }
+
+    /* Now try remapping both pages again - fails under RHEL6 but not RHEL4 */
+    ret = remap_file_pages((void*)map, size, 0, 0, 0);
+
+    remap_limited_status = (ret == 0) ?
+        0 : /* Success means ret=0 (RHEL4) - remap_file_pages is not limited */
+        1; /* RHEL6 - remap_file_pages is limited */
+
+    close_unmap_unlink(map, size, fd, fnbuf);
+    return remap_limited_status;
+}
+
+#else /* no HAVE_WINDOWED_MODE */
+
+mdbm_page_t*
 get_window_page(MDBM* db, mdbm_page_t* page, int pagenum, int npages, uint32_t off, uint32_t len)
 {
     return NULL;
 }
+
 void
 release_window_pages(MDBM* db)
 {
 }
+
 void
 release_window_page(MDBM* db, void* p)
 {
+}
+
+int
+remap_is_limited(uint32_t sys_pagesize)
+{
+    return 1;   /* Windowed mode is not supported by FreeBSD, OSX, etc. */
 }
 #endif
 
@@ -8547,7 +8688,7 @@ mdbm_bsop_file_fetch(void* data, const datum* key, datum* val, datum* buf, int f
     }
     p = mdbm_bsop_file_align_ptr(buf->dptr);
     if (pread(d->fd,p,sz,0) < st.st_size) {
-        mdbm_logerror(LOG_ERR,0,"pread(%d,%p,%lld,0)",d->fd,p,(long long)sz);
+        mdbm_logerror(LOG_ERR,0,"pread(%d,%p,%lld,0)",d->fd,(void*)p,(long long)sz);
         return -1;
     }
     val->dptr = p;
@@ -8579,7 +8720,7 @@ mdbm_bsop_file_store(void* data, const datum* key, const datum* val, int flags)
     }
 
     if (pwrite(d->fd,p,sz,0) < sz) {
-        mdbm_logerror(LOG_ERR,0,"pwrite(%d,%p,%lld,0)",d->fd,p,(long long)sz);
+        mdbm_logerror(LOG_ERR,0,"pwrite(%d,%p,%lld,0)",d->fd,(void*)p,(long long)sz);
         return -1;
     }
 
@@ -8865,7 +9006,7 @@ mdbm_validate_r(MDBM* db, MDBM_ITER* iter)
             } else if (v.dsize != val.dsize || memcmp(v.dptr,val.dptr,v.dsize)) {
                 datum k = key;
                 if (mdbm_store_r(db,&k,&v,MDBM_REPLACE|MDBM_CLEAN|MDBM_CACHE_ONLY,iter) < 0
-                    && errno != ENOMEM && errno != EINVAL))
+                    && errno != ENOMEM && errno != EINVAL)
                 {
                     mdbm_logerror(LOG_ERR,0,"mdbm backing store cache refill error");
                     ret = -1;
@@ -9097,7 +9238,7 @@ dump_v3_page (void* user, const mdbm_iterate_info_t* info, const kvpair* kv)
   printf("  KEY[%u] sz=%-5u pg+off=%u+%u off=%-10ld",
          idx, key.dsize, pno, ei->key_offset, (long)(key.dptr-db->db_base));
   if (key.dsize) {
-      printf(" addr=%p = ", key.dptr);
+      printf(" addr=%p = ", (void*)key.dptr);
       print_data_bytes(key,0);
   /*} else if (PNO(db,pag) == 0 && i == -1) { */
   /*    printf(" [header]\n"); */
@@ -9109,7 +9250,7 @@ dump_v3_page (void* user, const mdbm_iterate_info_t* info, const kvpair* kv)
   }
 
   printf("  VAL[%u] sz=%-5u pg+off=%u+%u addr=%p = ",
-         idx, (deleted ? 0 : val.dsize), pno, ei->val_offset, (deleted ? NULL : val.dptr));
+         idx, (deleted ? 0 : val.dsize), pno, ei->val_offset, (void*)(deleted ? NULL : val.dptr));
   if (key.dsize) {
       print_data_bytes(val,0);
   } else if (ei->entry_flags & MDBM_ENTRY_DELETED) {
@@ -9296,134 +9437,6 @@ int mdbm_unlock_smart(MDBM *db, const datum *key, int flags)
 }
 
 
-#ifdef FREEBSD
-int
-remap_is_limited(uint32_t sys_pagesize)
-{
-    return 1;   /* Windowed mode is not supported by FreeBSD */
-}
-#else    /* Not FreeBSD (RHEL) */
-
-/* open_tmp_test_file is a helper used by remap_is_limited to open the test file. */
-/* Returns file descriptor if successful, -1 otherwise */
-
-int
-open_tmp_test_file(const char *file, uint32_t siz, char *buf)
-{
-    int created = 0, fd = -1;
-
-    snprintf(buf, MAXPATHLEN, "%s%d.map", file, gettid()); /* assuming buf is big enough */
-
-    fd = open(buf, O_RDWR|O_NOATIME);
-    if (fd < 0) {
-        created = 1;
-        fd = open(buf, O_RDWR|O_CREAT|O_TRUNC|O_NOATIME, 0664);
-        if (fd < 0) {
-            return -1;
-        }
-    }
-
-    /* expand the file to the proper size: write a "\0" byte to force the expansion */
-    if (created) {
-        if ((lseek(fd, siz-1, SEEK_SET) < 0) || (write(fd, "", 1) != 1)) {
-            mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot expand",buf);
-            close(fd);
-            return -1;
-        }
-    }
-    return fd;
-}
-
-
-static inline void
-close_unmap_unlink(uint8_t *map, uint32_t size, int fd, char *fname)
-{
-    if ((map != NULL) && (munmap(map, size) != 0)) {
-        mdbm_logerror(LOG_ERR,0,"%s: Could not munmap", fname);
-    }
-    if (close(fd) != 0) {
-        mdbm_logerror(LOG_ERR,0,"%s: Could not close", fname);
-    }
-    if (unlink(fname) != 0) {
-        mdbm_logerror(LOG_ERR,0,"%s: Could not unlink", fname);
-    }
-}
-
-/* for use by remap_is_limited().
- * -1 means unknown, 0 means not limited (RHEL4), 1 means limited(RHEL6)
- */
-static sig_atomic_t remap_limited_status = -1;
-
-
-/* remap_is_limited() - for internal use by mdbm_open_internal
- *
- * Tests whether MDBM V3 is running on RHEL 6 (in a 4-on-6 yroot).
- * Needed because we have to fail mdbm_open if opened with WINDOWED_MODE on RHEL6.
- *
- * Returns 1 if remap_file_pages is limited (RHEL6), or 0 if not (RHEL4).
- *
- * remap_limited_status: -1 means unknown, 0 means not limited (RHEL4), 1 means limited(RHEL6)
- */
-
-int
-remap_is_limited(uint32_t sys_pagesize)
-{
-    int ret, fd = -1;
-    uint8_t* map = NULL;
-    char *fname = "/tmp/remaptest";
-    uint32_t size = sys_pagesize + sys_pagesize; /* 2 pages needed in total */
-    char fnbuf[MAXPATHLEN];  /* File name buffer */
-
-    if (remap_limited_status >= 0) {
-        return remap_limited_status;   /* remap test previously performed: return result */
-    }
-
-    /* remap_limited_status < 0 - create test file */
-
-    if ((fd = open_tmp_test_file(fname, size, fnbuf)) < 0) {
-        fname = "/tmp/remaptest2";
-        if ((fd = open_tmp_test_file(fname, size, fnbuf)) < 0) {
-            mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot open", fname);
-            return 0;   /* Things are probably very broken, so something else will fail soon */
-        }
-    }
-
-    map = (uint8_t*)mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-    if (map == MAP_FAILED) {
-        mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot mmap (%d)", fnbuf, errno);
-        close_unmap_unlink(NULL, 0, fd, fnbuf);
-        return 1;  /* shouldn't fail: return "limited" but don't update remap_limited_status */
-    }
-
-    /*int remap_file_pages(void *addr, size_t size, int prot, ssize_t pgoff, int flags); */
-    if (remap_file_pages((void*)map, size, 0, 0, 0) != 0) {   /* map 2 pages first */
-        mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot remap first 2 pages",
-                      fnbuf);
-        close_unmap_unlink(map, size, fd, fnbuf);
-        return 1;  /* return "limited" but don't update remap_limited_status */
-    }
-
-    /* map 2nd file-page to offset 0 */
-    if (remap_file_pages((void*)map, sys_pagesize, 0, 1, 0) != 0) {
-        mdbm_logerror(LOG_ERR,0,"%s: Windowing remap test, cannot remap second page",
-                      fnbuf);
-        close_unmap_unlink(map, size, fd, fnbuf);
-        return 1;  /* return "limited" but don't update remap_limited_status */
-    }
-
-    /* Now try remapping both pages again - fails under RHEL6 but not RHEL4 */
-    ret = remap_file_pages((void*)map, size, 0, 0, 0);
-
-    remap_limited_status = (ret == 0) ?
-        0 : /* Success means ret=0 (RHEL4) - remap_file_pages is not limited */
-        1; /* RHEL6 - remap_file_pages is limited */
-
-    close_unmap_unlink(map, size, fd, fnbuf);
-    return remap_limited_status;
-}
-
-#endif  /* not FREEBSD (RHEL) */
-
 static int
 page_counter_func(void *user, const mdbm_chunk_info_t *info)
 {
@@ -9591,7 +9604,7 @@ int mdbm_check_residency(MDBM* db, mdbm_ubig_t *pgs_in, mdbm_ubig_t *pgs_out)
         if (!page_bits) { page_bits = (unsigned char*)malloc(cur_pages); }
         memset(page_bits, 0, cur_pages);
 
-        if (0 != (ret = mincore(base, cur_pages*sys_pg, page_bits)) ) {
+        if (0 != (ret = mincore(base, cur_pages*sys_pg, (mincore_vec_type)page_bits)) ) {
             mdbm_logerror(LOG_ERR,0," mdbm_check_residency: mincore() failed %d : %s", 
                 errno, strerror(errno));
             goto resident_out;
@@ -9706,7 +9719,7 @@ pin_pages(MDBM *db)
     hdr_size = MDBM_DB_NUM_DIR_BYTES(db);
     if (mlock(db->db_base, hdr_size) < 0) {
         mdbm_logerror(LOG_ERR, 0, "Cannot mlock header (%p,%llu)",
-                      db->db_base, (unsigned long long) hdr_size);
+                      (void*)db->db_base, (unsigned long long) hdr_size);
         return -1;
     }
 
@@ -9757,7 +9770,7 @@ unlock_pages(MDBM *db)
     hdr_size = MDBM_DB_NUM_DIR_BYTES(db);
     if ((ret = munlock(db->db_base, hdr_size)) < 0) {
         mdbm_logerror(LOG_ERR, 0, "Cannot munlock hdr(%p,%llu)",
-                      db->db_base, (unsigned long long) hdr_size);
+                      (void*)db->db_base, (unsigned long long) hdr_size);
     }
 
     /* Round hdr size to next MDBM pagesize */

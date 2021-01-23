@@ -68,6 +68,9 @@ DECLARE_CACHED_METHOD_ID(mdbmExceptionClass, mdbmExceptionCtorId, "<init>", "(Lj
 DECLARE_CACHED_METHOD_ID(mdbmExceptionClass, mdbmExceptionSetPathId, "setPath", "(Ljava/lang/String;)V")
 DECLARE_CACHED_METHOD_ID(mdbmExceptionClass, mdbmExceptionSetInfoId, "setInfo", "(Ljava/lang/String;)V")
 
+DECLARE_CACHED_CLASS(mdbmDeleteExceptionClass, MDBM_DELETE_EXCEPTION)
+DECLARE_CACHED_METHOD_ID(mdbmDeleteExceptionClass, mdbmDeleteExceptionCtorId, "<init>", "(Ljava/lang/String;)V")
+
 DECLARE_CACHED_CLASS(mdbmFetchExceptionClass, MDBM_FETCH_EXCEPTION)
 DECLARE_CACHED_METHOD_ID(mdbmFetchExceptionClass, mdbmFetchExceptionCtorId, "<init>", "(Ljava/lang/String;)V")
 
@@ -79,10 +82,6 @@ DECLARE_CACHED_METHOD_ID(mdbmNoEntryExceptionClass, mdbmNoEntryExceptionCtorId, 
 
 DECLARE_CACHED_CLASS(mdbmCreatePoolFailedExceptionClass, MDBM_CREATE_POOL_FAILED_EXCEPTION)
 DECLARE_CACHED_METHOD_ID(mdbmCreatePoolFailedExceptionClass, mdbmCreatePoolFailedExceptionCtorId, "<init>", "(Ljava/lang/String;)V")
-
-static void ThrowNullPointerException(JNIEnv *jenv, const char *mesg) {
-    ThrowException(jenv, NULL_POINTER_EXCEPTION, mesg);
-}
 
 static void zeroDatum(datum &d) {
     d.dptr = NULL;
@@ -273,7 +272,7 @@ public:
         javaBytes.set(jenv, bytes);
         RETURN_FALSE_IF_EXCEPTION();
 
-        d.dptr = (char*) javaBytes.getBytes();
+        d.dptr = (char*) javaBytes.get();
 
         valid = true;
         mdbmDatum = pmdbmDatum;
@@ -329,28 +328,28 @@ public:
     }
 
     // FETCH
-    ScopedKvPair(JNIEnv *jenv, kvpair &kv) :
+    ScopedKvPair(JNIEnv *jenv, kvpair &in_kv) :
             valid(false), mdbmKvPair(NULL) {
         zeroKv(kv);
 
-        if ((0 == kv.key.dsize || NULL == kv.key.dptr)
-                && (0 == kv.val.dsize || NULL == kv.val.dptr)) {
+        if ((0 == in_kv.key.dsize || NULL == in_kv.key.dptr)
+                && (0 == in_kv.val.dsize || NULL == in_kv.val.dptr)) {
             //nothing to do.
             return;
         }
 
         GET_CACHED_CLASS(jenv, mdbmKvPairClass);
         GET_CACHED_METHOD_ID(jenv, mdbmKvPairDatumCtorId);
-        if (NULL == mdbmDatumClass || NULL == mdbmKvPairDatumCtorId) {
+        if (NULL == mdbmKvPairClass || NULL == mdbmKvPairDatumCtorId) {
             // valid is set to false so bail.
             return;
         }
 
         // now we need to create the datums to fill out.
-        key.setDatum(jenv, kv.key);
+        key.setDatum(jenv, in_kv.key);
         RETURN_IF_EXCEPTION_OR_NULL(key.getMdbmDatum());
 
-        val.setDatum(jenv, kv.val);
+        val.setDatum(jenv, in_kv.val);
         RETURN_IF_EXCEPTION_OR_NULL(val.getMdbmDatum());
 
         // now that key and val are setup, we can create the java object using them.
@@ -391,7 +390,7 @@ private:
 };
 
 static MDBM *getMdbmPointer(JNIEnv *jenv, jobject thisObject) {
-    RETURN_NULL_AND_THROW_IF_NULL(thisObject, "null thisObject object");
+    RETURN_NULL_AND_THROW_IF_NULL(thisObject, "null thisObject object in getMdbmPointer");
 
     GET_CACHED_CLASS(jenv, nativeMdbmImplementationClass);
     RETURN_NULL_IF_EXCEPTION_OR_NULL (nativeMdbmImplementationClass);
@@ -409,7 +408,7 @@ static MDBM *getMdbmPointer(JNIEnv *jenv, jobject thisObject) {
 }
 
 static MDBM *getPooledMdbmPointer(JNIEnv *jenv, jobject thisObject) {
-    RETURN_NULL_AND_THROW_IF_NULL(thisObject, "null thisObject object");
+    RETURN_NULL_AND_THROW_IF_NULL(thisObject, "null thisObject object in getPooledMdbmPointer");
 
     GET_CACHED_CLASS(jenv, pooledMdbmHandleClass);
     RETURN_NULL_IF_EXCEPTION_OR_NULL (pooledMdbmHandleClass);
@@ -428,7 +427,7 @@ static MDBM *getPooledMdbmPointer(JNIEnv *jenv, jobject thisObject) {
 static MDBM_ITER *getIterPointer(JNIEnv *jenv, jobject thisObject) {
 
     if (NULL == thisObject) {
-        ThrowException(jenv, NULL_POINTER_EXCEPTION, "null thisObject object");
+        // it's perfectly valid to have a null iterator
         return NULL;
     }
 
@@ -450,7 +449,7 @@ static MDBM_ITER *getIterPointer(JNIEnv *jenv, jobject thisObject) {
 static mdbm_pool_t *getPoolPointer(JNIEnv *jenv, jobject thisObject) {
 
     if (NULL == thisObject) {
-        ThrowException(jenv, NULL_POINTER_EXCEPTION, "null thisObject object");
+        ThrowException(jenv, NULL_POINTER_EXCEPTION, "null thisObject object in getPoolPointer");
         return NULL;
     }
 
@@ -583,20 +582,18 @@ static jobject mdbm_fetch_wrapper(JNIEnv *jenv, jclass thisClass,
     datum value = { 0, };
     int ret = (*mdbm_function)(mdbm, keyDatum.getDatum(), &value, iter);
 
-    // deal with errors first.
-    if (false
-            == checkZeroIsOkReturn(jenv, ret, thisObject, MDBM_FETCH_EXCEPTION,
+    if ( ret == -1 ) {
+        if ( errno == ENOENT ) {
+            checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_NOENTRY_EXCEPTION,
+                    mdbmNoEntryExceptionClass, mdbmNoEntryExceptionCtorId,
+                    mdbm_function_name, 0, iter);
+            return NULL;
+        } else {
+            checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_FETCH_EXCEPTION,
                     mdbmFetchExceptionClass, mdbmFetchExceptionCtorId,
-                    mdbm_function_name, 0, iter)) {
-        return NULL;
-    }
-
-    // deal with missing entry
-    if (0 == value.dsize && NULL == value.dptr) {
-        checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_NOENTRY_EXCEPTION,
-                mdbmNoEntryExceptionClass, mdbmNoEntryExceptionCtorId,
-                mdbm_function_name, 0, iter);
-        return NULL;
+                    mdbm_function_name, 0, iter);
+            return NULL;
+        }
     }
 
     // deal with success.
@@ -812,9 +809,17 @@ JNIEXPORT void JNICALL Java_com_yahoo_db_mdbm_internal_NativeMdbmAccess_mdbm_1de
 
     int ret = mdbm_delete (mdbm, *keyDatum.getDatum());
 
-    // deal with errors first.
-    checkZeroIsOkReturn(jenv, ret, MDBM_DELETE_EXCEPTION, "mdbm_delete", 0,
-            NULL);
+    if ( ret == -1 ) {
+        if ( errno == ENOENT ) {
+            checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_NOENTRY_EXCEPTION,
+                    mdbmNoEntryExceptionClass, mdbmNoEntryExceptionCtorId,
+                    "mdbm_delete", 0, NULL);
+        } else {
+            checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_DELETE_EXCEPTION,
+                    mdbmDeleteExceptionClass, mdbmDeleteExceptionCtorId,
+                    "mdbm_delete", 0, NULL);
+        }
+    }
 }
 
 /*
@@ -833,9 +838,17 @@ JNIEXPORT void JNICALL Java_com_yahoo_db_mdbm_internal_NativeMdbmAccess_mdbm_1de
 
     int ret = mdbm_delete_r (mdbm, iter);
 
-    // deal with errors first.
-    checkZeroIsOkReturn(jenv, ret, MDBM_DELETE_EXCEPTION, "mdbm_delete_r", 0,
-            iter);
+    if ( ret == -1 ) {
+        if ( errno == ENOENT ) {
+            checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_NOENTRY_EXCEPTION,
+                    mdbmNoEntryExceptionClass, mdbmNoEntryExceptionCtorId,
+                    "mdbm_delete_r", 0, iter);
+        } else {
+            checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_DELETE_EXCEPTION,
+                    mdbmDeleteExceptionClass, mdbmDeleteExceptionCtorId,
+                    "mdbm_delete_r", 0, iter);
+        }
+    }
 }
 
 /*
@@ -1245,9 +1258,17 @@ JNIEXPORT void JNICALL Java_com_yahoo_db_mdbm_internal_NativeMdbmAccess_mdbm_1de
 
     int ret = mdbm_delete_str(mdbm, keyString.getChars());
 
-    // deal with errors first.
-    checkZeroIsOkReturn(jenv, ret, MDBM_DELETE_EXCEPTION,
-            "mdbm_delete_str", 0, NULL);
+    if ( ret == -1 ) {
+        if ( errno == ENOENT ) {
+            checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_NOENTRY_EXCEPTION,
+                    mdbmNoEntryExceptionClass, mdbmNoEntryExceptionCtorId,
+                    "mdbm_delete_str", 0, NULL);
+        } else {
+            checkZeroIsOkReturn(jenv, -1, thisObject, MDBM_DELETE_EXCEPTION,
+                    mdbmDeleteExceptionClass, mdbmDeleteExceptionCtorId,
+                    "mdbm_delete_str", 0, NULL);
+        }
+    }
 
 }
 

@@ -24,18 +24,28 @@ help:
 
 
 doc:
-	make -C gendoc
+	$(MAKE) -C gendoc
 
 perl: default
-	(cd src/perl; $(PERL) Makefile.PL INSTALL_BASE=$(PERL_PREFIX) && make && make test)
+	# have to use PREFIX here so we can install into PREFIX/lib64 instead of PREFIX/lib
+	(cd src/perl; $(PERL) Makefile.PL INSTALLDIRS=vendor PREFIX=$(PERL_PREFIX) && $(MAKE) && $(MAKE) test)
 
 all: default perl doc
 
-install-all: all install
-	make -C gendoc install
-	make -C src/perl install
+install-all: all install doc-install perl-install
+	@echo ===================== removing $(PERL_PREFIX)/lib/perl5/x86_64-linux-thread-multi/perllocal.pod
+	rm -f $(PERL_PREFIX)/lib/perl5/x86_64-linux-thread-multi/perllocal.pod
+
+doc-install:
+	$(MAKE) -C gendoc install
+
+perl-install:
+	$(MAKE) -C src/perl install
+	rm -f $(PERL_PREFIX)/lib/perl5/x86_64-linux-thread-multi/perllocal.pod
 
 clean::
-	make -C src/perl clean || /bin/true
-	make -C gendoc clean
+	$(MAKE) -C src/perl clean || $(TRUECMD)
+	$(MAKE) -C gendoc clean
+	rm -f src/perl/Makefile.old
+	rm -rf src/perl/object
 

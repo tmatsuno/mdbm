@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #include <execinfo.h>
 extern "C" {
@@ -23,7 +24,7 @@ extern "C" {
 
 
   // Intel (and later model AMD) Fetch Time-StampCounter
-  // WANRING:  This value may be affected by speedstep and may vary randomly across cores.
+  // WARNING:  This value may be affected by speedstep and may vary randomly across cores.
   __inline__ uint64_t rdtsc(void) {
     uint32_t lo, hi;
     __asm__ __volatile__ (      // serialize
@@ -124,13 +125,13 @@ public:
 #define CHECKPOINTV(msg, ...) 
 
 //#define TRACE_LOCKS
-#define PRINT_LOCK_TRACE(msg) {                                                  \
-    char buf[512];                                                               \
-    snprintf(buf, 512,                                                           \
-        "rec:%p pid:%d self:"OWNER_FMT" %s count:%u owner:"OWNER_FMT" idx:%d\n", \
-        rec, getpid(), get_thread_id(), msg, rec->count,                         \
-        rec->owner, index);                                                      \
-    fprintf(stderr, buf);                                                        \
+#define PRINT_LOCK_TRACE(msg) {                                                      \
+    char buf[512];                                                                   \
+    snprintf(buf, 512,                                                               \
+        "rec:%p pid:%d self:" OWNER_FMT " %s count:%u owner:" OWNER_FMT " idx:%d\n", \
+        rec, getpid(), get_thread_id(), msg, rec->count,                             \
+        rec->owner, index);                                                          \
+    fprintf(stderr, buf);                                                            \
   }
 
 #endif /* DONT_MULTI_INCLUDE_MDBM_UTIL_HH */

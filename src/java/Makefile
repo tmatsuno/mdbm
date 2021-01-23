@@ -1,5 +1,4 @@
-CANONICALIZE=readlink -m -n -q
-TOPDIR=$(shell $(CANONICALIZE) $(shell pwd)/../..)
+TOPDIR=$(shell cd ../.. && pwd)
 include $(TOPDIR)/Makefile.base
 
 HEADERS=            \
@@ -10,14 +9,14 @@ CPP_SOURCES=      \
   com_yahoo_db_mdbm_internal_NativeMdbmAccess.cc
 
 
-LIBNAME=libmdbm_java.so
+LIBNAME=libmdbm_java.$(SHLIB_EXT)
 LIBVER=4
 SONAME=-Wl,-soname,$(LIBNAME).$(LIBVER)
 #-Wl,-rpath,$(DEFAULT_LIB_INSTALL_PATH)
 
 # TODO: Fix this to not be rh specific
 INCDIR += -I/usr/lib/jvm/java/include -I/usr/lib/jvm/java/include/linux
-LIB_BUILD_FLAGS +=  -L/usr/lib/jvm/java/jre/lib/amd64/ -ljsig -lrt  -L$(TOPDIR)/src/lib/$(OBJDIR)  -lmdbm -Wall  -fno-strict-aliasing -Wno-unused-function -D_FILE_OFFSET_BITS=64
+LIB_BUILD_FLAGS +=  -L/usr/lib/jvm/java/jre/lib/amd64/ -ljsig $(LIBRT)  -L$(TOPDIR)/src/lib/$(OBJDIR)  -lmdbm -Wall  -fno-strict-aliasing -Wno-unused-function -D_FILE_OFFSET_BITS=64
 
 LIB_DEST=$(PREFIX)/lib$(ARCH_SUFFIX)
 ifeq ($(SET_RPATH),1)
@@ -39,7 +38,7 @@ install:: default-make-target
 	$(INSTALL) -D $(OBJDIR)/$(LIBNAME).$(LIBVER) $(LIB_DEST)
 	#ln -s -f -r $(LIB_DEST)/$(LIBNAME).$(LIBVER) $(LIB_DEST)/$(LIBNAME)
 	# some systems don't support "ln -r" (relative links), emulate it...
-	cd $(LIB_DEST); ln -s -f -r $(LIBNAME).$(LIBVER) $(LIBNAME)
+	cd $(LIB_DEST); ln -s -f $(LIBNAME).$(LIBVER) $(LIBNAME)
 
 clean :: clean-objs
 

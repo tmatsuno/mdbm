@@ -72,7 +72,11 @@ int do_delete_lockfiles(const char* dbname) {
     char fn[MAXPATHLEN+1];
 
     if (dbname[0] == '/') {
-        strncpy(realname, dbname, sizeof(realname));
+        if (realpath(dbname, realname) == NULL) {
+            mdbm_logerror(LOG_ERR, 0, "Unable to get realpath for %s", dbname);
+            errno = ENOENT;
+            return -1;
+        }
         realname[MAXPATHLEN] = '\0';
     } else if (realpath(dbname, realname) == NULL) {
         int len;
@@ -348,7 +352,13 @@ struct mdbm_locks* open_locks_inner(const char* dbname, int flags, int do_lock, 
     count = get_cpu_count() * 2;
   } else if (flags & MDBM_PARTITIONED_LOCKS) {
     type = MLOCK_INDEX;
+#ifdef PARTITION_LOCK_COUNT
+    count = PARTITION_LOCK_COUNT;
+#elif defined(PARTITION_LOCK_CPU_MULTIPLIER)
+    count = get_cpu_count() * PARTITION_LOCK_CPU_MULTIPLIER;
+#else
     count = 128;
+#endif // PARTITION_LOCK_COUNT
   }
   if (locks->open(dbname, flags, type, count, do_lock, need_check)) {
     delete locks;

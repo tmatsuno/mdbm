@@ -47,6 +47,11 @@
 #include "mdbm_util.h"
 #include "mdbm_internal.h"
 
+#ifdef __MACH__
+int rl_completion_suppress_append;
+#endif
+
+
 extern "C" {
 extern void print_lock_state_inner(struct mdbm_locks *locks);
 extern struct mdbm_locks* open_locks_inner(const char *dbname, int flags, int doLock,
@@ -130,7 +135,7 @@ void PrintDatum(FILE *outfile, const char *prefix, datum d)
     len = d.dsize;
     s = d.dptr;
     while (len > 0) {
-        fprintf(outfile, "%s%p  ", prefix, s);
+        fprintf(outfile, "%s%p  ", prefix, (void*)s);
         for (i = 0; i < 16; i++) {
             if (i == 8) {
                 fputc(' ', outfile);
@@ -994,8 +999,10 @@ char** mash_completion(const char* text, int start, int end)
 
 void initialize_readline()
 {
+    static char name[10];
+    strcpy(name, "mash");
     // Allow conditional parsing of the ~/.inputrc file.
-    rl_readline_name = "mash";
+    rl_readline_name = name;
     // Tell the completer that we want a crack first.
     rl_attempted_completion_function = mash_completion;
 }
@@ -1156,7 +1163,7 @@ public:
         string arg = onearg;
         Utils.FinalizePath(arg);
         const int bufLen = 65536;
-        char buf[bufLen];
+        char buf[bufLen+1];
         int fd = open(arg.c_str(), O_RDONLY);
         if (fd < 0) {
             fprintf(OutputFilePtr, "Cat could not open [%s], %s\n", arg.c_str(), strerror(errno));
@@ -1875,7 +1882,7 @@ ProcessInputOption(const string &inputFile, bool outputToFile)
 int main(int argc, char** argv)
 {
     char pwdbuf[MAXPATHLEN];
-    if (getcwd(pwdbuf, MAXPATHLEN) > 0) {
+    if (getcwd(pwdbuf, MAXPATHLEN)) {
         PwdStr = pwdbuf;
     }
 
